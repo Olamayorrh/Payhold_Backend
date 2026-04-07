@@ -22,6 +22,11 @@ const paymentLinkSchema = new mongoose.Schema({
         required: true,
         unique: true
     },
+    feePaidBy: {
+        type: String,
+        enum: ['seller', 'buyer'],
+        default: 'buyer'
+    },
     status: {
         type: String,
         enum: ['active', 'expired'],

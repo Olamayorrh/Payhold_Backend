@@ -1,11 +1,12 @@
 import User from '../models/User.js';
+import Wallet from '../models/Wallet.js';
 import generateToken from '../utils/generateToken.js';
 
 // @desc    Register a new user
 // @route   POST /api/auth/signup
 // @access  Public
 export const registerUser = async (req, res) => {
-    const { fullName, email, phone, password, role, nin } = req.body;
+    const { fullName, email, phone, password, role, nin, businessName } = req.body;
     const businessDocument = req.file ? req.file.path : '';
 
     try {
@@ -22,14 +23,20 @@ export const registerUser = async (req, res) => {
             password,
             role: role || 'buyer',
             nin,
+            businessName,
             businessDocument
         });
 
         if (user) {
+            // Create user wallet
+            await Wallet.create({ userId: user._id });
+
             res.status(201).json({
                 _id: user._id,
                 fullName: user.fullName,
                 email: user.email,
+                phone: user.phone,
+                businessName: user.businessName,
                 role: user.role,
                 token: generateToken(user._id)
             });
@@ -55,6 +62,8 @@ export const authUser = async (req, res) => {
                 _id: user._id,
                 fullName: user.fullName,
                 email: user.email,
+                phone: user.phone,
+                businessName: user.businessName,
                 role: user.role,
                 token: generateToken(user._id)
             });
@@ -91,6 +100,7 @@ export const claimGuest = async (req, res) => {
             _id: user._id,
             fullName: user.fullName,
             email: user.email,
+            phone: user.phone,
             role: user.role,
             token: generateToken(user._id)
         });
@@ -110,10 +120,78 @@ export const getUserProfile = async (req, res) => {
                 _id: user._id,
                 fullName: user.fullName,
                 email: user.email,
+                phone: user.phone,
+                businessName: user.businessName,
                 role: user.role,
                 kycLevel: user.kycLevel,
                 isVerified: user.isVerified,
                 trustScore: user.trustScore
+            });
+        } else {
+            res.status(404).json({ message: 'User not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Check if email exists and user type
+// @route   POST /api/auth/check-email
+// @access  Public
+export const checkEmailStatus = async (req, res) => {
+    try {
+        const { email } = req.body;
+        const user = await User.findOne({ email });
+
+        if (user) {
+            // Mask the phone: Keep first 5 and last 2 characters
+            const phone = user.phone || '';
+            const maskedPhone = phone.length > 7 
+                ? `${phone.slice(0, 5)}${'*'.repeat(phone.length - 7)}${phone.slice(-2)}`
+                : phone;
+
+            return res.json({ 
+                status: true, 
+                exists: true, 
+                isGuest: user.isGuest || false,
+                fullName: user.fullName,
+                maskedPhone: maskedPhone
+            });
+        }
+
+        res.json({ status: true, exists: false });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Update user profile
+// @route   PUT /api/auth/profile
+// @access  Private
+export const updateUserProfile = async (req, res) => {
+    try {
+        const user = await User.findById(req.user._id);
+
+        if (user) {
+            user.fullName = req.body.fullName || user.fullName;
+            user.email = req.body.email || user.email;
+            user.phone = req.body.phone || user.phone;
+            user.businessName = req.body.businessName || user.businessName;
+
+            if (req.body.password) {
+                user.password = req.body.password;
+            }
+
+            const updatedUser = await user.save();
+
+            res.json({
+                _id: updatedUser._id,
+                fullName: updatedUser.fullName,
+                email: updatedUser.email,
+                phone: updatedUser.phone,
+                businessName: updatedUser.businessName,
+                role: updatedUser.role,
+                token: generateToken(updatedUser._id)
             });
         } else {
             res.status(404).json({ message: 'User not found' });

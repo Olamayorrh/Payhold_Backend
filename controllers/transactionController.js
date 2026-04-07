@@ -1,5 +1,43 @@
 import Transaction from '../models/Transaction.js';
+import Wallet from '../models/Wallet.js';
+import Notification from '../models/Notification.js';
+import User from '../models/User.js';
+import * as EmailService from '../services/emailService.js';
 import crypto from 'crypto';
+
+// Reusable logic for processing a successful payment
+export const processSuccessfulPayment = async (transaction) => {
+    if (transaction.status !== 'pending') return;
+
+    transaction.status = 'paid';
+    await transaction.save();
+
+    // 1. Update Seller's Wallet (Escrow Balance)
+    let sellerWallet = await Wallet.findOne({ userId: transaction.sellerId });
+    if (!sellerWallet) {
+        sellerWallet = await Wallet.create({ userId: transaction.sellerId });
+    }
+    
+    // If seller pays the fee, deduct it from their payout now
+    const netAmount = transaction.feePaidBy === 'seller' ? transaction.amount - transaction.escrowCharge : transaction.amount;
+    sellerWallet.escrowBalance += netAmount;
+    await sellerWallet.save();
+
+    // 2. Create Notification for Seller
+    const seller = await User.findById(transaction.sellerId);
+    await Notification.create({
+        userId: transaction.sellerId,
+        message: `Payment of ₦${transaction.amount.toLocaleString()} received for item. Funds held in escrow.`,
+        type: 'payment'
+    });
+
+    // 3. Send Email to Seller
+    // Find payment link title for the email
+    const populatedTx = await Transaction.findById(transaction._id).populate('paymentLinkId');
+    const itemTitle = populatedTx.paymentLinkId?.title || 'Escrow Item';
+    
+    await EmailService.sendPaymentNotification(seller.email, transaction.amount, itemTitle);
+};
 
 // @desc    Handle Paystack Webhooks
 // @route   POST /api/payment/webhook
@@ -16,10 +54,9 @@ export const handleWebhook = async (req, res) => {
             const reference = event.data.reference;
             const transaction = await Transaction.findOne({ paymentReference: reference });
 
-            if (transaction && transaction.status === 'pending') {
-                transaction.status = 'paid';
-                await transaction.save();
-                console.log(`Transaction ${reference} marked as PAID via Webhook`);
+            if (transaction) {
+                await processSuccessfulPayment(transaction);
+                console.log(`Transaction ${reference} processed via Webhook`);
             }
         }
     }
@@ -32,13 +69,13 @@ export const handleWebhook = async (req, res) => {
 // @access  Private (Seller only)
 export const markAsDelivered = async (req, res) => {
     try {
-        const transaction = await Transaction.findById(req.params.id);
+        const transaction = await Transaction.findById(req.params.id).populate('buyerId paymentLinkId sellerId');
 
         if (!transaction) {
             return res.status(404).json({ message: 'Transaction not found' });
         }
 
-        if (transaction.sellerId.toString() !== req.user._id.toString()) {
+        if (transaction.sellerId._id.toString() !== req.user._id.toString()) {
             return res.status(401).json({ message: 'Not authorized' });
         }
 
@@ -52,7 +89,19 @@ export const markAsDelivered = async (req, res) => {
         transaction.notificationLevel = 0; // Reset for countdown
         await transaction.save();
 
-        res.json({ status: true, message: 'Item marked as DELIVERED', data: transaction });
+        const businessDisplay = transaction.sellerId.businessName || transaction.sellerId.fullName;
+
+        // Notify Buyer
+        await Notification.create({
+            userId: transaction.buyerId._id,
+            message: `"${transaction.paymentLinkId?.title}" has been sent out by "${businessDisplay}", once you receive and inspect, kindly release the payment to "${businessDisplay}".`,
+            type: 'delivery'
+        });
+
+        // Send Email to Buyer
+        await EmailService.sendDeliveryAlert(transaction.buyerId.email, transaction.paymentLinkId?.title || 'your item', businessDisplay);
+
+        res.json({ status: true, message: 'Item marked as SHIPPED. Status updated to In Transit.', data: transaction });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -81,9 +130,57 @@ export const confirmReceipt = async (req, res) => {
         transaction.deliveryConfirmedByBuyer = true;
         await transaction.save();
 
-        // TODO: In Phase 5, trigger real payout to Seller's internal wallet
+        // Move funds from Escrow to Available Balance
+        let sellerWallet = await Wallet.findOne({ userId: transaction.sellerId });
+        if (sellerWallet) {
+            sellerWallet.escrowBalance -= transaction.amount;
+            sellerWallet.availableBalance += transaction.amount;
+            await sellerWallet.save();
+        }
+
+        // Notify Seller
+        await Notification.create({
+            userId: transaction.sellerId,
+            message: `Buyer confirmed receipt of item. ₦${transaction.amount.toLocaleString()} has been moved to your available balance.`,
+            type: 'system'
+        });
         
         res.json({ status: true, message: 'Item RECEIVED. Funds released to Seller.', data: transaction });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Buyer disputes the item
+// @route   POST /api/payment/dispute/:id
+// @access  Private (Buyer only)
+export const disputeTransaction = async (req, res) => {
+    try {
+        const transaction = await Transaction.findById(req.params.id);
+
+        if (!transaction) {
+            return res.status(404).json({ message: 'Transaction not found' });
+        }
+
+        if (transaction.buyerId.toString() !== req.user._id.toString()) {
+            return res.status(401).json({ message: 'Not authorized' });
+        }
+
+        if (transaction.status !== 'delivered') {
+            return res.status(400).json({ message: 'Item must be DELIVERED before raising a dispute' });
+        }
+
+        transaction.status = 'disputed';
+        await transaction.save();
+
+        // Notify Seller
+        await Notification.create({
+            userId: transaction.sellerId,
+            message: `Buyer has raised a DISPUTE for transaction of ₦${transaction.amount.toLocaleString()}. Funds are now locked.`,
+            type: 'dispute'
+        });
+
+        res.json({ status: true, message: 'Transaction DISPUTED. Funds are locked in escrow.', data: transaction });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

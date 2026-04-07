@@ -3,8 +3,8 @@ import Transaction from '../models/Transaction.js';
 import { sendEscrowNotification } from './emailService.js';
 
 // Configuration for testing (3 minutes instead of 3 days)
-const TEST_MODE = true;
-const MS_PER_DAY = TEST_MODE ? 60000 : 86400000; // 1 minute in ms if testing, else 24 hours
+const TEST_MODE = false;
+const MS_PER_DAY = TEST_MODE ? 60000 : 86400000;
 
 export const initCronJobs = () => {
     // Run every minute

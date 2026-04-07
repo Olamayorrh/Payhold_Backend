@@ -5,7 +5,7 @@ import crypto from 'crypto';
 // @route   POST /api/link/create
 // @access  Private (Seller only)
 export const createPaymentLink = async (req, res) => {
-    const { title, description, amount } = req.body;
+    const { title, description, amount, feePaidBy } = req.body;
 
     try {
         const linkCode = crypto.randomBytes(4).toString('hex');
@@ -15,7 +15,8 @@ export const createPaymentLink = async (req, res) => {
             title,
             description,
             amount,
-            linkCode
+            linkCode,
+            feePaidBy: feePaidBy || 'buyer'
         });
 
         res.status(201).json({
@@ -35,7 +36,7 @@ export const getPaymentLinkByCode = async (req, res) => {
     const { code } = req.params;
 
     try {
-        const paymentLink = await PaymentLink.findOne({ linkCode: code }).populate('sellerId', 'fullName trustScore isVerified');
+        const paymentLink = await PaymentLink.findOne({ linkCode: code }).populate('sellerId', 'fullName businessName trustScore isVerified');
 
         if (!paymentLink) {
             return res.status(404).json({ message: 'Payment link not found' });

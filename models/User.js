@@ -24,6 +24,10 @@ const userSchema = new mongoose.Schema({
         enum: ['buyer', 'seller'],
         default: 'buyer'
     },
+    businessName: {
+        type: String,
+        required: false
+    },
     kycLevel: {
         type: Number,
         enum: [0, 1, 2, 3],

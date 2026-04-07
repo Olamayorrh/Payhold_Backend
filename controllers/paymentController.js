@@ -1,8 +1,10 @@
 import Transaction from '../models/Transaction.js';
 import User from '../models/User.js';
 import PaymentLink from '../models/PaymentLink.js';
+import Wallet from '../models/Wallet.js';
 import * as paystackService from '../services/paystackService.js';
 import { sendEscrowNotification } from '../services/emailService.js';
+import { processSuccessfulPayment } from './transactionController.js';
 import crypto from 'crypto';
 
 // @desc    Initialize a transaction via a payment link (Hybrid Guest Flow)
@@ -30,15 +32,20 @@ export const initializeTransaction = async (req, res) => {
                 fullName: buyerFullName || 'Guest Buyer',
                 email: buyerEmail,
                 phone: buyerPhone,
-                password: crypto.randomBytes(8).toString('hex'), // Random temp password
+                password: req.body.password || crypto.randomBytes(8).toString('hex'), // Use supplied password or random
                 isGuest: true,
                 role: 'buyer'
             });
+            // Create wallet for guest
+            await Wallet.create({ userId: buyer._id });
         }
 
         const sellerPrice = paymentLink.amount;
         const platformFee = sellerPrice * 0.025; // 2.5% platform fee
-        const totalAmount = sellerPrice + platformFee;
+        
+        // Total amount depends on who pays the fee
+        const totalAmount = paymentLink.feePaidBy === 'buyer' ? sellerPrice + platformFee : sellerPrice;
+        
         const reference = crypto.randomBytes(12).toString('hex');
 
         // 3. Initialize Paystack
@@ -58,6 +65,7 @@ export const initializeTransaction = async (req, res) => {
                 amount: sellerPrice,
                 escrowCharge: platformFee,
                 totalAmount,
+                feePaidBy: paymentLink.feePaidBy,
                 paymentReference: reference,
                 status: 'pending'
             });
@@ -65,15 +73,15 @@ export const initializeTransaction = async (req, res) => {
             await newTransaction.save();
 
             // 5. Send Notification to Buyer
+            const businessDisplay = paymentLink.sellerId.businessName || paymentLink.sellerId.fullName;
             const emailSubject = `Complete your Payment for ${paymentLink.title}`;
-            const emailMessage = `You have initiated a secure escrow payment for "${paymentLink.title}" with ${paymentLink.sellerId.fullName}. 
-                                 Please complete your payment of ₦${totalAmount.toLocaleString()} to proceed.`;
+            const emailMessage = `You have initiated a secure escrow payment for "${paymentLink.title}" with ${businessDisplay}. Please complete your payment of ₦${totalAmount.toLocaleString()} to proceed.`;
                                  
             const html = `
                 <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
                     <h2 style="color: #0F172A;">Payment Initiated</h2>
                     <p>Hello ${buyerFullName},</p>
-                    <p>You have initiated a secure escrow payment for <strong>"${paymentLink.title}"</strong> with <strong>${paymentLink.sellerId.fullName}</strong>.</p>
+                    <p>You have initiated a secure escrow payment for <strong>"${paymentLink.title}"</strong> with <strong>${businessDisplay}</strong>.</p>
                     
                     <div style="background-color: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
                         <p style="margin: 0; font-size: 14px; color: #64748B;">Amount to Pay:</p>
@@ -83,7 +91,7 @@ export const initializeTransaction = async (req, res) => {
                     <p>Please complete your payment via the link provided in the application to proceed with the transaction. Your funds will be held securely in escrow until you confirm delivery of the item/service.</p>
                     
                     <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-                    <p style="font-size: 12px; color: #64748B;">Powered by <strong>PayHold Escrow</strong>. Secure Social Commerce.</p>
+                    <p style="font-size: 12px; color: #64748B;">Powered by <strong>${businessDisplay}</strong> via PayHold Escrow.</p>
                 </div>
             `;
 
@@ -124,8 +132,7 @@ export const verifyTransaction = async (req, res) => {
         }
 
         if (verificationData.status && verificationData.data.status === 'success') {
-            transaction.status = 'paid';
-            await transaction.save();
+            await processSuccessfulPayment(transaction);
 
             return res.status(200).json({
                 status: true,
@@ -155,6 +162,21 @@ export const getUserTransactions = async (req, res) => {
             status: true,
             data: transactions
         });
+    } catch (error) {
+        res.status(500).json({ status: false, message: error.message });
+    }
+};
+
+// @desc    Get user wallet balance
+// @route   GET /api/payment/wallet
+// @access  Private
+export const getMyWallet = async (req, res) => {
+    try {
+        let wallet = await Wallet.findOne({ userId: req.user._id });
+        if (!wallet) {
+            wallet = await Wallet.create({ userId: req.user._id });
+        }
+        res.json({ status: true, data: wallet });
     } catch (error) {
         res.status(500).json({ status: false, message: error.message });
     }

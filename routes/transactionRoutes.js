@@ -1,5 +1,5 @@
 import express from 'express';
-import { handleWebhook, markAsDelivered, confirmReceipt } from '../controllers/transactionController.js';
+import { handleWebhook, markAsDelivered, confirmReceipt, disputeTransaction } from '../controllers/transactionController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -10,5 +10,6 @@ router.post('/webhook', handleWebhook);
 // Protected transaction actions
 router.post('/deliver/:id', protect, markAsDelivered);
 router.post('/confirm/:id', protect, confirmReceipt);
+router.post('/dispute/:id', protect, disputeTransaction);
 
 export default router;

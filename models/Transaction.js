@@ -27,6 +27,11 @@ const transactionSchema = new mongoose.Schema({
         type: Number,
         required: true
     },
+    feePaidBy: {
+        type: String,
+        enum: ['seller', 'buyer'],
+        default: 'buyer'
+    },
     status: {
         type: String,
         enum: ['pending', 'paid', 'delivered', 'completed', 'disputed', 'cancelled'],
